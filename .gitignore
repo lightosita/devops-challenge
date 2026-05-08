@@ -1,0 +1,43 @@
+# Terraform
+**/.terraform/
+*.tfstate
+*.tfstate.backup
+*.tfstate.lock.info
+.terraform.lock.hcl
+*.tfvars
+terraform.tfvars
+override.tf
+override.tf.json
+
+# AWS credentials
+.aws/
+credentials
+
+# Node
+node_modules/
+npm-debug.log
+.npm
+
+# Docker
+.docker/
+
+# Environment files
+.env
+.env.*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs
+*.log
+logs/
+
+# Jenkins
+jenkins/setup/*.sh.bak

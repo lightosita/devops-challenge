@@ -1,0 +1,136 @@
+pipeline {
+    agent any
+
+    environment {
+        AWS_REGION          = 'us-east-1'
+        ECR_REGISTRY        = '858431073224.dkr.ecr.us-east-1.amazonaws.com'
+        ECR_REPO_NAME       = 'devops-challenge-app'
+        ECS_CLUSTER         = 'devops-challenge-dev-cluster'
+        ECS_SERVICE         = 'devops-challenge-dev-service'
+        IMAGE_TAG           = "build-${env.BUILD_NUMBER}"
+    }
+
+    options {
+        buildDiscarder(logRotator(numToKeepStr: '10'))
+        timeout(time: 30, unit: 'MINUTES')
+        disableConcurrentBuilds()
+    }
+
+    stages {
+        stage('Checkout') {
+            steps {
+                echo "Building from branch: ${env.GIT_BRANCH ?: 'manual'}"
+                echo "Build number: ${env.BUILD_NUMBER}"
+            }
+        }
+
+        stage('Test Application') {
+            steps {
+                sh '''
+                    cd app
+                    npm ci
+                    npm test
+                '''
+            }
+        }
+
+        stage('Build Docker Image') {
+            steps {
+                script {
+                    withCredentials([
+                        string(credentialsId: 'AWS_ACCESS_KEY_ID', variable: 'AWS_ACCESS_KEY_ID'),
+                        string(credentialsId: 'AWS_SECRET_ACCESS_KEY', variable: 'AWS_SECRET_ACCESS_KEY')
+                    ]) {
+                        sh """
+                            export AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+                            export AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+                            export AWS_DEFAULT_REGION=${AWS_REGION}
+
+                            docker build \
+                              -t ${ECR_REGISTRY}/${ECR_REPO_NAME}:${IMAGE_TAG} \
+                              -t ${ECR_REGISTRY}/${ECR_REPO_NAME}:latest \
+                              app/
+                        """
+                    }
+                }
+            }
+        }
+
+        stage('Push to ECR') {
+            steps {
+                script {
+                    withCredentials([
+                        string(credentialsId: 'AWS_ACCESS_KEY_ID', variable: 'AWS_ACCESS_KEY_ID'),
+                        string(credentialsId: 'AWS_SECRET_ACCESS_KEY', variable: 'AWS_SECRET_ACCESS_KEY')
+                    ]) {
+                        sh """
+                            export AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+                            export AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+                            export AWS_DEFAULT_REGION=${AWS_REGION}
+
+                            aws ecr get-login-password --region ${AWS_REGION} | \
+                              docker login --username AWS --password-stdin ${ECR_REGISTRY}
+
+                            docker push ${ECR_REGISTRY}/${ECR_REPO_NAME}:${IMAGE_TAG}
+                            docker push ${ECR_REGISTRY}/${ECR_REPO_NAME}:latest
+                        """
+                    }
+                }
+            }
+        }
+
+        stage('Deploy to ECS') {
+            steps {
+                script {
+                    withCredentials([
+                        string(credentialsId: 'AWS_ACCESS_KEY_ID', variable: 'AWS_ACCESS_KEY_ID'),
+                        string(credentialsId: 'AWS_SECRET_ACCESS_KEY', variable: 'AWS_SECRET_ACCESS_KEY')
+                    ]) {
+                        sh """
+                            export AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+                            export AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+                            export AWS_DEFAULT_REGION=${AWS_REGION}
+
+                            aws ecs update-service \
+                              --cluster ${ECS_CLUSTER} \
+                              --service ${ECS_SERVICE} \
+                              --force-new-deployment \
+                              --region ${AWS_REGION}
+
+                            echo "Waiting for service to stabilize..."
+                            aws ecs wait services-stable \
+                              --cluster ${ECS_CLUSTER} \
+                              --services ${ECS_SERVICE} \
+                              --region ${AWS_REGION}
+
+                            echo "Deployment complete!"
+                        """
+                    }
+                }
+            }
+        }
+
+        stage('Smoke Test') {
+            steps {
+                sh '''
+                    echo "Running smoke test..."
+                    sleep 15
+                    curl -f http://devops-challenge-dev-alb-355201639.us-east-1.elb.amazonaws.com/health
+                    echo "Smoke test PASSED"
+                '''
+            }
+        }
+    }
+
+    post {
+        always {
+            sh 'docker system prune -f || true'
+        }
+        success {
+            echo "Pipeline succeeded! Image ${IMAGE_TAG} deployed to ECS."
+        }
+        failure {
+            echo "Pipeline FAILED at stage: ${env.STAGE_NAME}"
+        }
+    }
+}
